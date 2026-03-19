@@ -34,11 +34,11 @@ function(add_amiga_variant target_name chipset s2p_bench c2p_source render_sourc
     add_custom_target(${target_name} ALL DEPENDS ${output_file})
 endfunction()
 
-# ECS: blitter-assisted C2P path, S2P benchmark mode enabled.
+# ECS: blitter-assisted C2P path with normal per-frame drawing enabled.
 add_amiga_variant(
     demo_ecs
     ECS
-    1
+    0
     ${CMAKE_CURRENT_SOURCE_DIR}/src/c2p_blit_4bpl_stretched_local.s
     ${CMAKE_CURRENT_SOURCE_DIR}/src/render_chunky_span_asm.s
 )
