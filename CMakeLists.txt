@@ -5,12 +5,12 @@ set(VC_COMPILER "vc" CACHE STRING "Path to vbcc 'vc' compiler driver")
 
 set(AMIGA_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/render_chunky_span_asm.s
 )
 
-function(add_amiga_variant target_name chipset s2p_bench c2p_source)
+function(add_amiga_variant target_name chipset s2p_bench c2p_source render_source)
     set(AMIGA_SOURCES
         ${AMIGA_COMMON_SOURCES}
+        ${render_source}
         ${c2p_source}
     )
     set(output_file ${CMAKE_CURRENT_BINARY_DIR}/${target_name})
@@ -40,6 +40,7 @@ add_amiga_variant(
     ECS
     1
     ${CMAKE_CURRENT_SOURCE_DIR}/src/c2p_blit_4bpl_stretched_local.s
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render_chunky_span_asm.s
 )
 
 # AGA: blitter-assisted C2P path with AGA-specific blit-size optimization.
@@ -48,4 +49,5 @@ add_amiga_variant(
     AGA
     0
     ${CMAKE_CURRENT_SOURCE_DIR}/src/c2p_blit_4bpl_stretched_aga.s
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/render_chunky_span_asm_020.s
 )

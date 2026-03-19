@@ -3,15 +3,17 @@
 This project now builds with CMake and produces two variants:
 
 - `demo_ecs`: ECS-oriented build using the blitter-assisted C2P path.
-- `demo_aga`: AGA-oriented build using the blitter-assisted C2P path.
+- `demo_aga`: AGA-oriented build using the blitter-assisted C2P path and a 68020-tuned chunky span renderer.
 
 ## Source Layout
 
 All source files live under `src/`:
 
 - `src/main.c`
-- `src/render_chunky_span_asm.s`
+- `src/render_chunky_span_asm.s` (ECS/default renderer)
+- `src/render_chunky_span_asm_020.s` (AGA/68020-optimized renderer)
 - `src/c2p_blit_4bpl_stretched_local.s`
+- `src/c2p_blit_4bpl_stretched_aga.s`
 
 ## Prerequisites
 
