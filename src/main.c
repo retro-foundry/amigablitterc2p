@@ -207,7 +207,8 @@ extern void *c2p_blit_4bpl_stageptr_c(void);
 extern void render_chunky_span_copy2_asm(UBYTE *row0, UBYTE *row1, const UBYTE *tex, LONG u, LONG v, LONG du2, LONG dv2, LONG count);
 extern void render_chunky_all_asm(UBYTE *chunky, const UBYTE *tex, LONG camu, LONG camv, const LineModel *lm_base, WORD num_pairs);
 
-static LineModel g_line_model[NUM_ANGLES][VISIBLE_LINES];
+/* Allocated in FAST RAM at startup so the render hot-path never touches chip RAM. */
+static LineModel (*g_line_model)[VISIBLE_LINES] = NULL;
 static LONG g_camu = 0;
 static LONG g_camv = 0;
 
@@ -630,6 +631,7 @@ int main(int argc, char **argv)
     WORD show_idx = 0;
     WORD draw_idx = 1;
     BOOL chunky_in_chip = FALSE;
+    BOOL wb_was_open = FALSE;
 
     memset(&cop, 0, sizeof(cop));
     memset(bm, 0, sizeof(bm));
@@ -649,6 +651,11 @@ int main(int argc, char **argv)
     }
 
     SetTaskPri(FindTask(NULL), TASK_PRIORITY);
+
+    /* Close the Workbench screen so Intuition stops maintaining its view.
+     * Without this the OS re-enables Workbench bitplane DMA on every VBL,
+     * consuming chip bus bandwidth proportional to the WB screen resolution. */
+    wb_was_open = CloseWorkBench();
 
     g_log = fopen(log_path, "w");
     if (g_log)
@@ -682,15 +689,19 @@ int main(int argc, char **argv)
     screen[1] = (UBYTE *)AllocMem(SCREEN_BYTES, MEMF_CHIP | MEMF_CLEAR);
     chunky    = (UBYTE *)alloc_fast_or_public(CHUNKY_BYTES);
     tex       = (UBYTE *)alloc_fast_or_public(TEX_BYTES);
+    g_line_model = (LineModel (*)[VISIBLE_LINES])alloc_fast_or_public(
+                       (ULONG)sizeof(LineModel) * NUM_ANGLES * VISIBLE_LINES);
     c2p_stage = (UBYTE *)c2p_blit_4bpl_stageptr_c();
-    if (!screen[0] || !screen[1] || !chunky || !tex)
+    if (!screen[0] || !screen[1] || !chunky || !tex || !g_line_model)
     {
         print_both("AllocMem failed\n");
 
-        if (screen[0]) FreeMem(screen[0], SCREEN_BYTES);
-        if (screen[1]) FreeMem(screen[1], SCREEN_BYTES);
-        if (chunky)    FreeMem(chunky, CHUNKY_BYTES);
-        if (tex)       FreeMem(tex, TEX_BYTES);
+        if (screen[0])    FreeMem(screen[0], SCREEN_BYTES);
+        if (screen[1])    FreeMem(screen[1], SCREEN_BYTES);
+        if (chunky)       FreeMem(chunky, CHUNKY_BYTES);
+        if (tex)          FreeMem(tex, TEX_BYTES);
+        if (g_line_model) FreeMem(g_line_model,
+                              (ULONG)sizeof(LineModel) * NUM_ANGLES * VISIBLE_LINES);
 
         reset_display();
         if (g_log)
@@ -706,6 +717,7 @@ int main(int argc, char **argv)
 
     print_both("Path: chunky + c2p\n");
     print_both("Chunky source: %s\n", mem_type_name((APTR)chunky));
+    print_both("Line model: %s\n", mem_type_name((APTR)g_line_model));
     print_both("C2P backend: %s\n", C2P_BACKEND_NAME);
     print_both("S2P bench mode: %s\n", s2p_bench_only ? "ON (no per-frame CPU draw)" : "OFF");
     if (s2p_bench_only)
@@ -868,9 +880,15 @@ int main(int argc, char **argv)
 
     reset_display();
 
+    if (wb_was_open)
+    {
+        OpenWorkBench();
+    }
+
     FreeMem(cop.list, cop.bytes);
     FreeMem(tex, TEX_BYTES);
     FreeMem(chunky, CHUNKY_BYTES);
+    FreeMem(g_line_model, (ULONG)sizeof(LineModel) * NUM_ANGLES * VISIBLE_LINES);
     FreeMem(screen[0], SCREEN_BYTES);
     FreeMem(screen[1], SCREEN_BYTES);
     if (g_log)
