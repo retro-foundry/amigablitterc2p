@@ -205,8 +205,11 @@ extern void c2p_blit_4bpl_c(void *chunky, void *screenBase);
 extern void c2p_blit_4bpl_waitblit_c(void);
 extern void *c2p_blit_4bpl_stageptr_c(void);
 extern void render_chunky_span_copy2_asm(UBYTE *row0, UBYTE *row1, const UBYTE *tex, LONG u, LONG v, LONG du2, LONG dv2, LONG count);
+extern void render_chunky_all_asm(UBYTE *chunky, const UBYTE *tex, LONG camu, LONG camv, const LineModel *lm_base, WORD num_pairs);
 
 static LineModel g_line_model[NUM_ANGLES][VISIBLE_LINES];
+static LONG g_camu = 0;
+static LONG g_camv = 0;
 
 /* 16-colour palette */
 static const UWORD g_palette[16] =
@@ -591,20 +594,15 @@ static void fps_counter_shutdown(const FpsCounter *fps)
 
 static void render_chunky(UBYTE *chunky, const UBYTE *tex, ULONG frame)
 {
-    WORD ang;
-    WORD ly;
-    LONG camu = (LONG)frame * 48;
-    LONG camv = (LONG)frame * 24;
+    WORD ang = (WORD)((frame >> 2) & (NUM_ANGLES - 1));
 
-    ang = (WORD)((frame >> 2) & (NUM_ANGLES - 1));
-
-    for (ly = 0; ly < CHUNKY_H; ly += 2)
-    {
-        const LineModel *lm = &g_line_model[ang][ly];
-        UBYTE *row0 = chunky + (ULONG)ly * CHUNKY_W;
-        UBYTE *row1 = row0 + CHUNKY_W;
-        render_chunky_span_copy2_asm(row0, row1, tex, lm->u0 + camu, lm->v0 + camv, lm->du2, lm->dv2, CHUNKY_W);
-    }
+    /* Running counters avoid two 32-bit multiplies per frame.
+     * g_camu/g_camv are updated here so the first call (frame=0) correctly
+     * uses 0 and subsequent calls advance by 48/24 each frame. */
+    render_chunky_all_asm(chunky, tex, g_camu, g_camv,
+                          g_line_model[ang], (WORD)(CHUNKY_H / 2));
+    g_camu += 48;
+    g_camv += 24;
 }
 
 int main(int argc, char **argv)
