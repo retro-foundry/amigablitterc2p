@@ -253,6 +253,12 @@ BOOL init_display(void)
     LoadView(NULL);
     WaitTOF();
     WaitTOF();
+
+    /* Kill all DMA except blitter (we re-enable what we need after copper setup).
+     * This removes sprite/disk/audio DMA bus contention from previous OS state.
+     * DMAF_ALL without SETCLR clears all DMA enable bits. */
+    CREGS->dmacon = DMAF_ALL;
+
     return ((((struct GfxBase *)GfxBase)->DisplayFlags & PAL) == PAL);
 }
 
