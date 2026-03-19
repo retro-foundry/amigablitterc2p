@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
 project(amigatest NONE)
 
+# Support Debug and Release (and other configs) for multi-config generators
+# (e.g. Visual Studio). Outputs go to build/Debug/ and build/Release/.
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+  set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release RelWithDebInfo MinSizeRel)
+endif()
+
 set(VC_COMPILER "vc" CACHE STRING "Path to vbcc 'vc' compiler driver")
 
 # vasmm68k_mot is invoked directly for 68020 .s sources because vc's +aos68k
@@ -13,63 +20,77 @@ set(AMIGA_COMMON_SOURCES
 )
 
 function(add_amiga_variant target_name chipset s2p_bench c2p_source render_source)
-    set(output_file ${CMAKE_CURRENT_BINARY_DIR}/${target_name})
+    set(bin_dir "${CMAKE_CURRENT_BINARY_DIR}")
+    set(out_debug "${bin_dir}/Debug/${target_name}")
+    set(out_release "${bin_dir}/Release/${target_name}")
 
     if(chipset STREQUAL "AGA")
-        # Assemble the 68020 render source directly so we can pass -m68020.
-        # vc's +aos68k profile never forwards the CPU flag to its vasm call.
         get_filename_component(render_name "${render_source}" NAME_WE)
-        set(render_obj "${CMAKE_CURRENT_BINARY_DIR}/${render_name}.o")
+        set(obj_debug "${bin_dir}/Debug/${render_name}.o")
+        set(obj_release "${bin_dir}/Release/${render_name}.o")
 
+        # Separate command per config so OUTPUT matches what is actually created.
         add_custom_command(
-            OUTPUT  "${render_obj}"
+            OUTPUT "${obj_debug}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${bin_dir}/Debug"
             COMMAND ${VASM}
-                    -m68020
-                    -Fhunk
-                    -quiet
-                    -nowarn=62
-                    "${render_source}"
-                    -o "${render_obj}"
+                    -m68020 -Fhunk -quiet -nowarn=62
+                    "${render_source}" -o "${obj_debug}"
             DEPENDS "${render_source}"
             VERBATIM
-            COMMENT "Assembling ${render_name} (68020)"
+            COMMENT "Assembling ${render_name} (68020) [Debug]"
+        )
+        add_custom_command(
+            OUTPUT "${obj_release}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${bin_dir}/Release"
+            COMMAND ${VASM}
+                    -m68020 -Fhunk -quiet -nowarn=62
+                    "${render_source}" -o "${obj_release}"
+            DEPENDS "${render_source}"
+            VERBATIM
+            COMMENT "Assembling ${render_name} (68020) [Release]"
         )
 
-        set(AMIGA_SOURCES
-            ${AMIGA_COMMON_SOURCES}
-            ${c2p_source}
-            "${render_obj}"
-        )
-        # Do NOT pass -cpu=m68020 to vc: vbccm68k internal-errors on it.
-        # The render .s is already assembled as 68020 above; C stays 68000.
-        set(CPU_FLAGS)
+        set(sources_debug  ${AMIGA_COMMON_SOURCES} ${c2p_source} "${obj_debug}")
+        set(sources_release ${AMIGA_COMMON_SOURCES} ${c2p_source} "${obj_release}")
     else()
-        set(AMIGA_SOURCES
-            ${AMIGA_COMMON_SOURCES}
-            ${render_source}
-            ${c2p_source}
-        )
-        set(CPU_FLAGS)
+        set(sources_common ${AMIGA_COMMON_SOURCES} ${render_source} ${c2p_source})
+        set(sources_debug  ${sources_common})
+        set(sources_release ${sources_common})
     endif()
 
     add_custom_command(
-        OUTPUT ${output_file}
+        OUTPUT "${out_debug}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${bin_dir}/Debug"
         COMMAND ${VC_COMPILER}
-                +aos68k
-                ${CPU_FLAGS}
-                ${AMIGA_SOURCES}
+                +aos68k ${sources_debug}
+                -O0
+                -DS2P_BENCH_ONLY=${s2p_bench}
+                -DAMIGA_CHIPSET_${chipset}=1
+                -o "${out_debug}"
+                -lamiga
+        DEPENDS ${sources_debug}
+        WORKING_DIRECTORY ${bin_dir}
+        VERBATIM
+        COMMENT "Building ${target_name} (${chipset}) [Debug]"
+    )
+    add_custom_command(
+        OUTPUT "${out_release}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${bin_dir}/Release"
+        COMMAND ${VC_COMPILER}
+                +aos68k ${sources_release}
                 -O3
                 -DS2P_BENCH_ONLY=${s2p_bench}
                 -DAMIGA_CHIPSET_${chipset}=1
-                -o ${output_file}
+                -o "${out_release}"
                 -lamiga
-        DEPENDS ${AMIGA_SOURCES}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+        DEPENDS ${sources_release}
+        WORKING_DIRECTORY ${bin_dir}
         VERBATIM
-        COMMENT "Building ${target_name} (${chipset})"
+        COMMENT "Building ${target_name} (${chipset}) [Release]"
     )
 
-    add_custom_target(${target_name} ALL DEPENDS ${output_file})
+    add_custom_target(${target_name} ALL DEPENDS "${out_debug}" "${out_release}")
 endfunction()
 
 # ECS: blitter-assisted C2P path with normal per-frame drawing enabled.

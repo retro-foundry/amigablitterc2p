@@ -1,9 +1,8 @@
 @echo off
 setlocal
 
-set VBCC=C:\Users\paula\amiga-dev
-
 cmake -S . -B build || exit /b 1
-cmake --build build --target demo_ecs || exit /b 1
-cmake --build build --target demo_aga || exit /b 1
-echo Built build\demo_ecs
+cmake --build build --target demo_ecs --config Release || exit /b 1
+cmake --build build --target demo_aga --config Release || exit /b 1
+echo Built build\Release\demo_ecs
+echo Built build\Release\demo_aga
