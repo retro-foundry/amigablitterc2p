@@ -37,8 +37,12 @@ build.bat
 
 **Manual configure and build:**
 
+Download and unzip vbcc.
+
+http://phoenix.owl.de/vbcc/2022-03-23/vbcc_bin_win64.zip
+
 ```bat
-set VBCC=C:\path\to\vbcc-win
+set VBCC=C:\path\to\vbcc
 cmake -S . -B build
 cmake --build build --target demo_ecs --config Release
 cmake --build build --target demo_aga --config Release
