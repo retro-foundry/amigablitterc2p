@@ -64,7 +64,7 @@
 #define TEX_BYTES            (TEX_W * TEX_H)
 
 #ifndef NUM_ANGLES
-#define NUM_ANGLES           16
+#define NUM_ANGLES           64
 #endif
 
 /* 24.8-ish fixed point */
@@ -229,13 +229,30 @@ static const UBYTE g_stretch_lut[16] =
     0xF0, 0xF3, 0xFC, 0xFF
 };
 
-static const LONG g_dir[NUM_ANGLES][2] =
+/* Direction vectors (fx,fy) per angle: 256*cos(2*PI*i/NUM_ANGLES), 256*sin(...).
+ * Filled at startup from sin_table_64 so we don't need floating point. */
+static LONG g_dir[NUM_ANGLES][2];
+
+/* sin(2*PI*i/64)*256 for i=0..63 (one full circle). cos(i) = sin((i+16)&63).
+ * Entry 63 must be -25 (not 0) so angle 63 differs from angle 0 and there's
+ * no stutter when the frame counter wraps. */
+static const short sin_table_64[64] =
 {
-    {  256,    0 }, {  236,   96 }, {  180,  180 }, {   96,  236 },
-    {    0,  256 }, {  -96,  236 }, { -180,  180 }, { -236,   96 },
-    { -256,    0 }, { -236,  -96 }, { -180, -180 }, {  -96, -236 },
-    {    0, -256 }, {   96, -236 }, {  180, -180 }, {  236,  -96 }
+      0,  25,  50,  74,  98, 121, 142, 163, 181, 198, 212, 226, 237, 246, 253, 256,
+    256, 253, 246, 237, 226, 212, 198, 181, 163, 142, 121,  98,  74,  50,  25,   0,
+      0, -25, -50, -74, -98,-121,-142,-163,-181,-198,-212,-226,-237,-246,-253,-256,
+   -256,-253,-246,-237,-226,-212,-198,-181,-163,-142,-121, -98, -74, -50, -25, -25
 };
+
+static void init_angle_dirs(void)
+{
+    WORD i;
+    for (i = 0; i < NUM_ANGLES; ++i)
+    {
+        g_dir[i][0] = (LONG)sin_table_64[(i + NUM_ANGLES/4) % NUM_ANGLES];
+        g_dir[i][1] = (LONG)sin_table_64[i];
+    }
+}
 
 static APTR alloc_fast_or_public(ULONG bytes)
 {
@@ -606,7 +623,7 @@ static void fps_counter_shutdown(const FpsCounter *fps)
 
 static void render_chunky(UBYTE *chunky, const UBYTE *tex, ULONG frame)
 {
-    WORD ang = (WORD)((frame >> 2) & (NUM_ANGLES - 1));
+    WORD ang = (WORD)(frame & (NUM_ANGLES - 1));
 
     /* Running counters avoid two 32-bit multiplies per frame.
      * g_camu/g_camv are updated here so the first call (frame=0) correctly
@@ -735,6 +752,7 @@ int main(int argc, char **argv)
     }
 
     build_texture(tex);
+    init_angle_dirs();
     build_line_model();
     c2p_blit_4bpl_init_c();
     if (s2p_bench_only)
