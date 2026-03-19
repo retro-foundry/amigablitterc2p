@@ -2,33 +2,21 @@
 
 ; =====================================================================
 ; AGA-optimized blitter-assisted Chunky-to-Planar (C2P) routine
-;  - 68000 assembly compatible interface
 ;  - 4 bitplanes (16 colours)
-;  - 2x1 horizontal expansion: 160-wide chunky -> 320-wide planar
+;  - 2x2 mode: 160-wide chunky -> 320-wide planar (2× horizontal)
 ;  - Input pixels are 8-bit "stretched": %aabbccdd (00/11 pairs)
 ;  - Uses AGA BLTSIZV/BLTSIZH for single-pass long linear blits
 ;
-; Optimisations vs the original per-helper design
-; ─────────────────────────────────────────────────
+; 10-blit blitter-only design
+; ─────────────────────────────
+; CPU-based plane packing (6-blit hybrid) was tried and is slower on
+; chip-RAM-only A1200: the 68020 competes with active bitplane DMA on
+; every chip RAM access (~280 ns/access stalled), while the blitter
+; bursts the same data at ~140 ns/word.  10 blitter-only blits win.
+;
 ; · Double-BTST WaitBlit (fat Agnus / Alice errata, HRM §6.2).
-;   Alice asserts BLTDONE immediately on BLTSIZE write; the first
-;   DMACONR read after that write may still see the stale not-busy
-;   state.  One dummy read before the spin loop prevents false early
-;   exits.
-;
-; · All four per-plane BSR helpers are inlined.  The original code
-;   made 8 BSR/RTS calls (two per plane); inlining removes that
-;   overhead entirely.
-;
-; · BSS buffers are longword-aligned (cnop 0,4).  The blitter requires
-;   only word alignment, but 32-bit alignment allows the linker and
-;   chip-bus controller to serve aligned accesses optimally.
-;
-; NOTE: CPU-based plane packing (replacing write blits with 68020 loops)
-; was tried and reverted.  On stock A1200 (chip RAM only) res1 is in chip
-; RAM and the 68020 must synchronise to the 7.09 MHz chip clock, costing
-; ~565 ns per MOVE.L vs the blitter's ~420 ns per output word.  CPU packs
-; are only a win when the source data is already in fast RAM.
+; · All four per-plane helpers inlined (no BSR/RTS overhead).
+; · BSS buffers longword-aligned (cnop 0,4).
 ; =====================================================================
 
                 ; -----------------------------
@@ -172,10 +160,7 @@ WaitBlitAGA:
         rts
 
 ; =====================================================================
-; C2P_AGA_Core
-;
-; 10-blit blitter-only C2P.  All per-plane helpers are inlined to
-; eliminate the BSR/RTS overhead of the original subroutine design.
+; C2P_AGA_Core — 10-blit blitter-only
 ;
 ; Register allocation:
 ;   a0 = chunky src, a1-a4 = plane0-3, a5 = scratch, a6 = CUSTOM
@@ -183,13 +168,10 @@ WaitBlitAGA:
 C2P_AGA_Core:
         lea     CUSTOM,a6
 
-        ; Enable blitter priority: blitter wins all cycles not taken by
-        ; display DMA.  This is the most important single throughput knob.
         move.w  #(DMAF_SETCLR|DMAF_BLTPRI),DMACON(a6)
 
         bsr     WaitBlitAGA
 
-        ; First/last word masks: no edge clipping.
         move.l  #$FFFFFFFF,BLTAFWM(a6)
 
 ; =====================================================================
@@ -213,7 +195,7 @@ C2P_AGA_Core:
 
         bsr     WaitBlitAGA
         move.w  #PASS_WORDS,BLTSIZV(a6)
-        move.w  #1,BLTSIZH(a6)          ; writing BLTSIZH starts the blit
+        move.w  #1,BLTSIZH(a6)
 
 ; =====================================================================
 ; Blit 2 — Merge plane3: res0 → res1
@@ -440,9 +422,7 @@ C2P_AGA_Core:
         move.w  #PLANE_WORDS,BLTSIZV(a6)
         move.w  #1,BLTSIZH(a6)
 
-        ; Restore cooperative bus access (clear BLTPRI)
         move.w  #DMAF_BLTPRI,DMACON(a6)
-
         rts
 
 ; =====================================================================

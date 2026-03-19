@@ -347,7 +347,8 @@ static BOOL build_copper_list(CopperState *cs)
     ULONG words;
     WORD i;
 
-    words = 2 + 8 + 6 + 4 + (DEPTH * 4) + 32 + 2 + 2 + 2;
+    /* Extra 4 words: wait for line $FF then disable bitplanes + black border. */
+    words = 2 + 8 + 6 + 4 + (DEPTH * 4) + 32 + 4 + 2 + 2;
 
     cop = (UWORD *)AllocMem(words * sizeof(UWORD), MEMF_CHIP | MEMF_CLEAR);
     if (!cop)
@@ -391,11 +392,15 @@ static BOOL build_copper_list(CopperState *cs)
         *p++ = g_palette[i];
     }
 
-    *p++ = (UWORD)((0xFF << 8) | 0xDF);
+    /* Wait for raster line $FF (last line before wrap), then kill bitplane DMA
+     * and set border to black.  This prevents the hardware fetching past the
+     * end of our 256-line buffer and showing garbage on lines 257-312 (PAL). */
+    *p++ = (UWORD)((0xFF << 8) | 0x07);
     *p++ = 0xFFFE;
-
-    *p++ = COPJMP1;
-    *p++ = 0;
+    *p++ = BPLCON0;
+    *p++ = 0x0000;
+    *p++ = COLOR00;
+    *p++ = 0x0000;
 
     *p++ = 0xFFFF;
     *p++ = 0xFFFE;
