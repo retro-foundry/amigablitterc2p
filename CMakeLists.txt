@@ -10,6 +10,19 @@ endif()
 
 set(VC_COMPILER "vc" CACHE STRING "Path to vbcc 'vc' compiler driver")
 
+# NDK include path so <hardware/custom.h> resolves (vc's +aos68k often only has targets/.../include).
+# Set VBCC (env or cache) before configuring; default NDK path is ${VBCC}/NDK_3.5/Include/include_h.
+if(NOT VBCC)
+  set(VBCC "$ENV{VBCC}" CACHE PATH "vbcc install root (used for NDK include path)")
+endif()
+set(VBCC_NDK_INCLUDE "" CACHE PATH "Amiga NDK include (e.g. .../NDK_3.5/Include/include_h)")
+if(VBCC AND NOT VBCC_NDK_INCLUDE)
+  set(VBCC_NDK_INCLUDE "${VBCC}/NDK_3.5/Include/include_h" CACHE PATH "Amiga NDK include" FORCE)
+endif()
+if(VBCC_NDK_INCLUDE)
+  set(AMIGA_NDK_INCLUDE_FLAG "-I${VBCC_NDK_INCLUDE}")
+endif()
+
 # vasmm68k_mot is invoked directly for 68020 .s sources because vc's +aos68k
 # config hardcodes the assembler call without forwarding -cpu=m68020 to vasm.
 # The pre-assembled .o is then handed to vc for linking alongside the C sources.
@@ -67,6 +80,7 @@ function(add_amiga_variant target_name chipset s2p_bench c2p_source render_sourc
                 -O0
                 -DS2P_BENCH_ONLY=${s2p_bench}
                 -DAMIGA_CHIPSET_${chipset}=1
+                ${AMIGA_NDK_INCLUDE_FLAG}
                 -o "${out_debug}"
                 -lamiga
         DEPENDS ${sources_debug}
@@ -82,6 +96,7 @@ function(add_amiga_variant target_name chipset s2p_bench c2p_source render_sourc
                 -O3
                 -DS2P_BENCH_ONLY=${s2p_bench}
                 -DAMIGA_CHIPSET_${chipset}=1
+                ${AMIGA_NDK_INCLUDE_FLAG}
                 -o "${out_release}"
                 -lamiga
         DEPENDS ${sources_release}
