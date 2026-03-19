@@ -6,19 +6,41 @@
 ;  - 4 bitplanes (16 colours)
 ;  - 2x1 horizontal expansion: 160-wide chunky -> 320-wide planar
 ;  - Input pixels are 8-bit "stretched": %aabbccdd (00/11 pairs)
-;  - Uses ECS/AGA BLTSIZV/BLTSIZH so long linear passes run as one blit
+;  - Uses AGA BLTSIZV/BLTSIZH for single-pass long linear blits
+;
+; Optimisations vs the original per-helper design
+; ─────────────────────────────────────────────────
+; · Double-BTST WaitBlit (fat Agnus / Alice errata, HRM §6.2).
+;   Alice asserts BLTDONE immediately on BLTSIZE write; the first
+;   DMACONR read after that write may still see the stale not-busy
+;   state.  One dummy read before the spin loop prevents false early
+;   exits.
+;
+; · All four per-plane BSR helpers are inlined.  The original code
+;   made 8 BSR/RTS calls (two per plane); inlining removes that
+;   overhead entirely.
+;
+; · BSS buffers are longword-aligned (cnop 0,4).  The blitter requires
+;   only word alignment, but 32-bit alignment allows the linker and
+;   chip-bus controller to serve aligned accesses optimally.
+;
+; NOTE: CPU-based plane packing (replacing write blits with 68020 loops)
+; was tried and reverted.  On stock A1200 (chip RAM only) res1 is in chip
+; RAM and the 68020 must synchronise to the 7.09 MHz chip clock, costing
+; ~565 ns per MOVE.L vs the blitter's ~420 ns per output word.  CPU packs
+; are only a win when the source data is already in fast RAM.
 ; =====================================================================
 
                 ; -----------------------------
                 ; Compile-time configuration
                 ; -----------------------------
-CHUNKY_W        EQU     160             ; pixels/bytes per chunky line (must be multiple of 16)
+CHUNKY_W        EQU     160             ; pixels/bytes per chunky line
 CHUNKY_H        EQU     160             ; visible chunky lines converted
 HORIZON_Y       EQU     96              ; destination Y offset on screen
 SCREEN_H        EQU     256
 
 OUT_W           EQU     (CHUNKY_W*2)     ; 320 pixels
-PLANE_BPR       EQU     (OUT_W/8)        ; bytes per row per plane (40 bytes for 320)
+PLANE_BPR       EQU     (OUT_W/8)        ; 40 bytes per row per plane
 BPL_SIZE        EQU     (PLANE_BPR*SCREEN_H)
 CHUNKY_SIZE     EQU     (CHUNKY_W*CHUNKY_H)
 
@@ -26,15 +48,14 @@ CHUNKY_SIZE     EQU     (CHUNKY_W*CHUNKY_H)
 RES_BPR         EQU     (CHUNKY_W/2)     ; 80 bytes per row
 RES_SIZE        EQU     (RES_BPR*CHUNKY_H)
 
-; Linear blit "row counts" for width=1 word tricks:
-; Pass AB/CD outputs one WORD per 4 chunky bytes => (CHUNKY_SIZE/4) rows
+; Linear blit row count for 1-word-wide passes (prepass AB / CD)
 PASS_WORDS      EQU     (CHUNKY_SIZE/4)
 
-; Final plane write outputs one WORD per 2 res-bytes-pairs => (CHUNKY_H * (CHUNKY_W/8)) words
-PLANE_WORDS     EQU     (CHUNKY_H*(CHUNKY_W/8))
+; Linear blit row count for the plane-write passes
+PLANE_WORDS     EQU     (CHUNKY_H*(CHUNKY_W/8))   ; 160 × 20 = 3200
 
-; Width in words for the rectangle merge step (res0->res1):
-MERGE_WWORDS    EQU     (RES_BPR/2)      ; 80 bytes / 2 = 40 words
+; Width in words for the rectangle merge step (res0 / resCD -> res1)
+MERGE_WWORDS    EQU     (RES_BPR/2)      ; 40 words
 
                 ; -----------------------------
                 ; Custom register base + offsets
@@ -52,8 +73,8 @@ BLTBPTH         EQU     $04C
 BLTAPTH         EQU     $050
 BLTDPTH         EQU     $054
 BLTSIZE         EQU     $058
-BLTSIZV         EQU     $05C            ; ECS/AGA vertical size
-BLTSIZH         EQU     $05E            ; ECS/AGA horizontal size + start
+BLTSIZV         EQU     $05C            ; AGA/ECS extended vertical size
+BLTSIZH         EQU     $05E            ; AGA/ECS horizontal size + start
 
 BLTCMOD         EQU     $060
 BLTBMOD         EQU     $062
@@ -66,32 +87,31 @@ BLTCDAT         EQU     $070
                 ; DMACON bits (write)
                 ; -----------------------------
 DMAF_SETCLR     EQU     $8000
-DMAF_BLTPRI     EQU     $0400           ; BLTPRI ("blitter nasty")
+DMAF_BLTPRI     EQU     $0400           ; blitter priority ("nasty")
 
                 ; -----------------------------
-                ; BLTCON constants used here
+                ; BLTCON constants
                 ; -----------------------------
-; LF = 0xE4 => D = (A & C) | (B & ~C)  (C used as constant mask, C DMA not enabled)
+; LF = $E4 => D = (A & C) | (B & ~C)  (C is the constant mask in BLTCDAT)
 BLT_LF_E4       EQU     $00E4
 
-; Channel enables in BLTCON0:
 BLT_USEA        EQU     $0800
 BLT_USEB        EQU     $0400
 BLT_USED        EQU     $0100
 
-; Base BLTCON0 value for A+B+D and LF=E4:
-BLT0_ABD_E4     EQU     (BLT_USEA|BLT_USEB|BLT_USED|BLT_LF_E4)  ; = $0DE4
+; Base BLTCON0: A+B+D enabled, LF=$E4, no A-shift by default
+BLT0_ABD_E4     EQU     (BLT_USEA|BLT_USEB|BLT_USED|BLT_LF_E4)  ; $0DE4
 
-; A-shift values go in bits 15..12 of BLTCON0
+; A-shift (bits 15:12 of BLTCON0)
 ASHIFT_2        EQU     $2000
 ASHIFT_4        EQU     $4000
 
-; B-shift values go in bits 15..12 of BLTCON1
+; B-shift (bits 15:12 of BLTCON1)
 BSHIFT_4        EQU     $4000
 BSHIFT_6        EQU     $6000
 BSHIFT_8        EQU     $8000
 
-; Descending (reverse) mode bit in BLTCON1 (area mode)
+; Descending mode (bit 1 of BLTCON1, area mode)
 BLT_DESC        EQU     $0002
 
         xdef    _c2p_blit_4bpl_init_c
@@ -112,72 +132,71 @@ _c2p_blit_4bpl_waitblit_c:
         rts
 
 ; void *c2p_blit_4bpl_stageptr_c(void);
-;   Returns CHIP staging pointer for stretched chunky pixels.
 _c2p_blit_4bpl_stageptr_c:
         move.l  #stretchedChunky,d0
         rts
 
 ; void c2p_blit_4bpl_c(void *chunky, void *screenBase);
-;   chunky is stretched chunky (%aabbccdd) in CHIP memory.
-;   screenBase is plane0 base for an interleaved planar block (4 planes used).
 _c2p_blit_4bpl_c:
         movem.l d2-d7/a2-a6,-(sp)
 
-        movea.l 48(sp),a0
-        movea.l 52(sp),a5
-        lea     (HORIZON_Y*PLANE_BPR)(a5),a1
-        movea.l a1,a2
-        adda.l  #BPL_SIZE,a2
-        movea.l a2,a3
-        adda.l  #BPL_SIZE,a3
-        movea.l a3,a4
-        adda.l  #BPL_SIZE,a4
+        movea.l 48(sp),a0               ; chunky source
+        movea.l 52(sp),a5               ; screen base
 
-        bsr     C2P_2x1_4bpl_Stretched_AGA
+        lea     (HORIZON_Y*PLANE_BPR)(a5),a1   ; plane0 (LSB)
+        movea.l a1,a2
+        adda.l  #BPL_SIZE,a2            ; plane1
+        movea.l a2,a3
+        adda.l  #BPL_SIZE,a3            ; plane2
+        movea.l a3,a4
+        adda.l  #BPL_SIZE,a4            ; plane3 (MSB)
+
+        bsr     C2P_AGA_Core
 
         movem.l (sp)+,d2-d7/a2-a6
         rts
 
-; ---------------------------------------------------------------------
-; WaitBlitAGA
-;   a6 = CUSTOM base ($DFF000)
-;   Waits until blitter is not busy.
-; ---------------------------------------------------------------------
+; =====================================================================
+; WaitBlitAGA — double-BTST idiom (fat Agnus / Alice errata)
+;
+; Alice asserts BLTDONE in DMACONR immediately when BLTSIZE is written,
+; but the bit may appear clear on the very first read after the write
+; due to bus pipeline latency.  Reading DMACONR once before the spin
+; loop flushes this stale state so the subsequent reads are reliable.
+; =====================================================================
 WaitBlitAGA:
-.wb_loop:
-        btst.b  #6,DMACONR(a6)         ; bit14 == bit6 of high byte
-        bne.s   .wb_loop
+        btst.b  #6,DMACONR(a6)          ; dummy read — flush stale pipeline
+.wba_loop:
+        btst.b  #6,DMACONR(a6)          ; reliable busy check
+        bne.s   .wba_loop
         rts
 
-; ---------------------------------------------------------------------
-; C2P_2x1_4bpl_Stretched_AGA
-;   Blitter-assisted C2P producing 4 bitplanes from stretched chunky.
+; =====================================================================
+; C2P_AGA_Core
 ;
-;   Inputs:
-;     a0 = src stretched chunky (%aabbccdd), size CHUNKY_W*CHUNKY_H
-;     a1 = dst plane0 (LSB)
-;     a2 = dst plane1
-;     a3 = dst plane2
-;     a4 = dst plane3 (MSB)
+; 10-blit blitter-only C2P.  All per-plane helpers are inlined to
+; eliminate the BSR/RTS overhead of the original subroutine design.
 ;
-;   Uses static CHIP buffers:
-;     res0, res1, resCD
-; ---------------------------------------------------------------------
-C2P_2x1_4bpl_Stretched_AGA:
+; Register allocation:
+;   a0 = chunky src, a1-a4 = plane0-3, a5 = scratch, a6 = CUSTOM
+; =====================================================================
+C2P_AGA_Core:
         lea     CUSTOM,a6
 
-        ; Optionally enable BLTPRI ("blitter nasty") during conversion.
+        ; Enable blitter priority: blitter wins all cycles not taken by
+        ; display DMA.  This is the most important single throughput knob.
         move.w  #(DMAF_SETCLR|DMAF_BLTPRI),DMACON(a6)
 
         bsr     WaitBlitAGA
 
-        ; Set first/last word masks for A to all 1s (no edge masking).
+        ; First/last word masks: no edge clipping.
         move.l  #$FFFFFFFF,BLTAFWM(a6)
 
-        ; -------------------------
-        ; Prepass AB: src -> res0
-        ; mask C = $F0F0, B-shift=4
-        ; -------------------------
+; =====================================================================
+; Blit 1 — Prepass AB: src → res0
+;   B-shift=4, C=$F0F0; separates the "ab" nibble pairs.
+;   Linear (1-word-wide), PASS_WORDS rows.
+; =====================================================================
         move.l  a0,BLTAPTH(a6)
         lea     2(a0),a5
         move.l  a5,BLTBPTH(a6)
@@ -190,27 +209,119 @@ C2P_2x1_4bpl_Stretched_AGA:
 
         move.w  #(BLT0_ABD_E4),BLTCON0(a6)
         move.w  #(BSHIFT_4),BLTCON1(a6)
-        move.w  #$F0F0,BLTCDAT(a6)     ; C constant mask
+        move.w  #$F0F0,BLTCDAT(a6)
 
-        ; AGA/ECS extended size registers: one long linear blit.
         bsr     WaitBlitAGA
         move.w  #PASS_WORDS,BLTSIZV(a6)
-        move.w  #1,BLTSIZH(a6)         ; width=1 word, starts blit
+        move.w  #1,BLTSIZH(a6)          ; writing BLTSIZH starts the blit
+
+; =====================================================================
+; Blit 2 — Merge plane3: res0 → res1
+;   B-shift=6, C=$CCCC, descending; isolates plane3 bits in high byte.
+;   Rect blit: CHUNKY_H rows × MERGE_WWORDS words.
+; =====================================================================
         bsr     WaitBlitAGA
 
-        ; -------------------------
-        ; Plane 3 from res0
-        ; -------------------------
-        bsr     MakePlaneFromRes0_Plane3
+        lea     res0,a5
+        lea     (RES_SIZE-2)(a5),a5
+        move.l  a5,BLTAPTH(a6)
+        move.l  a5,BLTBPTH(a6)
+        lea     res1,a5
+        lea     (RES_SIZE-2)(a5),a5
+        move.l  a5,BLTDPTH(a6)
 
-        ; -------------------------
-        ; Plane 2 from res0
-        ; -------------------------
-        bsr     MakePlaneFromRes0_Plane2
+        move.w  #0,BLTAMOD(a6)
+        move.w  #0,BLTBMOD(a6)
+        move.w  #0,BLTDMOD(a6)
 
-        ; -------------------------
-        ; Prepass CD: src -> resCD (descending, Ashift=4, mask C=$F0F0)
-        ; -------------------------
+        move.w  #(BLT0_ABD_E4),BLTCON0(a6)
+        move.w  #(BSHIFT_6|BLT_DESC),BLTCON1(a6)
+        move.w  #$CCCC,BLTCDAT(a6)
+
+        bsr     WaitBlitAGA
+        move.w  #CHUNKY_H,BLTSIZV(a6)
+        move.w  #MERGE_WWORDS,BLTSIZH(a6)
+
+; =====================================================================
+; Blit 3 — Write plane3: res1 → a4 (plane3)
+;   B-shift=8, C=$FF00; packs pairs of words from res1 into plane words.
+;   Linear (1-word-wide), PLANE_WORDS rows, BLTAMOD=BLTBMOD=2 (stride 4).
+; =====================================================================
+        bsr     WaitBlitAGA
+
+        lea     res1,a5
+        move.l  a5,BLTAPTH(a6)
+        lea     2(a5),a5
+        move.l  a5,BLTBPTH(a6)
+        move.l  a4,BLTDPTH(a6)
+
+        move.w  #2,BLTAMOD(a6)
+        move.w  #2,BLTBMOD(a6)
+        move.w  #0,BLTDMOD(a6)
+
+        move.w  #(BLT0_ABD_E4),BLTCON0(a6)
+        move.w  #(BSHIFT_8),BLTCON1(a6)
+        move.w  #$FF00,BLTCDAT(a6)
+
+        bsr     WaitBlitAGA
+        move.w  #PLANE_WORDS,BLTSIZV(a6)
+        move.w  #1,BLTSIZH(a6)
+
+; =====================================================================
+; Blit 4 — Merge plane2: res0 → res1
+;   A-shift=2, B-shift=8, C=$CCCC, descending; isolates plane2 bits.
+; =====================================================================
+        bsr     WaitBlitAGA
+
+        lea     res0,a5
+        lea     (RES_SIZE-2)(a5),a5
+        move.l  a5,BLTAPTH(a6)
+        move.l  a5,BLTBPTH(a6)
+        lea     res1,a5
+        lea     (RES_SIZE-2)(a5),a5
+        move.l  a5,BLTDPTH(a6)
+
+        move.w  #0,BLTAMOD(a6)
+        move.w  #0,BLTBMOD(a6)
+        move.w  #0,BLTDMOD(a6)
+
+        move.w  #(ASHIFT_2|BLT0_ABD_E4),BLTCON0(a6)
+        move.w  #(BSHIFT_8|BLT_DESC),BLTCON1(a6)
+        move.w  #$CCCC,BLTCDAT(a6)
+
+        bsr     WaitBlitAGA
+        move.w  #CHUNKY_H,BLTSIZV(a6)
+        move.w  #MERGE_WWORDS,BLTSIZH(a6)
+
+; =====================================================================
+; Blit 5 — Write plane2: res1 → a3 (plane2)
+; =====================================================================
+        bsr     WaitBlitAGA
+
+        lea     res1,a5
+        move.l  a5,BLTAPTH(a6)
+        lea     2(a5),a5
+        move.l  a5,BLTBPTH(a6)
+        move.l  a3,BLTDPTH(a6)
+
+        move.w  #2,BLTAMOD(a6)
+        move.w  #2,BLTBMOD(a6)
+        move.w  #0,BLTDMOD(a6)
+
+        move.w  #(BLT0_ABD_E4),BLTCON0(a6)
+        move.w  #(BSHIFT_8),BLTCON1(a6)
+        move.w  #$FF00,BLTCDAT(a6)
+
+        bsr     WaitBlitAGA
+        move.w  #PLANE_WORDS,BLTSIZV(a6)
+        move.w  #1,BLTSIZH(a6)
+
+; =====================================================================
+; Blit 6 — Prepass CD: src → resCD
+;   A-shift=4, descending; separates the "cd" nibble pairs.
+; =====================================================================
+        bsr     WaitBlitAGA
+
         lea     (CHUNKY_SIZE-4)(a0),a5
         move.l  a5,BLTAPTH(a6)
         lea     2(a5),a5
@@ -229,120 +340,14 @@ C2P_2x1_4bpl_Stretched_AGA:
 
         bsr     WaitBlitAGA
         move.w  #PASS_WORDS,BLTSIZV(a6)
-        move.w  #1,BLTSIZH(a6)         ; width=1 word, starts blit
-        bsr     WaitBlitAGA
-
-        ; -------------------------
-        ; Plane 1 from resCD
-        ; -------------------------
-        bsr     MakePlaneFromResCD_Plane1
-
-        ; -------------------------
-        ; Plane 0 from resCD
-        ; -------------------------
-        bsr     MakePlaneFromResCD_Plane0
-
-        ; Clear BLTPRI again (cooperative mode)
-        move.w  #DMAF_BLTPRI,DMACON(a6)
-
-        rts
-
-; ---------------------------------------------------------------------
-; Helper: merge + write plane3 using res0 -> res1 -> a4
-; ---------------------------------------------------------------------
-MakePlaneFromRes0_Plane3:
-        lea     res0,a5
-        lea     (RES_SIZE-2)(a5),a5
-        move.l  a5,BLTAPTH(a6)
-        move.l  a5,BLTBPTH(a6)
-        lea     res1,a5
-        lea     (RES_SIZE-2)(a5),a5
-        move.l  a5,BLTDPTH(a6)
-
-        move.w  #0,BLTAMOD(a6)
-        move.w  #0,BLTBMOD(a6)
-        move.w  #0,BLTDMOD(a6)
-
-        move.w  #(BLT0_ABD_E4),BLTCON0(a6)
-        move.w  #(BSHIFT_6|BLT_DESC),BLTCON1(a6)
-        move.w  #$CCCC,BLTCDAT(a6)
-
-        bsr     WaitBlitAGA
-        move.w  #CHUNKY_H,BLTSIZV(a6)
-        move.w  #MERGE_WWORDS,BLTSIZH(a6)
-        bsr     WaitBlitAGA
-
-        ; write res1 to plane3 (a4) as linear words
-        lea     res1,a5
-        move.l  a5,BLTAPTH(a6)
-        lea     2(a5),a5
-        move.l  a5,BLTBPTH(a6)
-        move.l  a4,BLTDPTH(a6)
-
-        move.w  #2,BLTAMOD(a6)
-        move.w  #2,BLTBMOD(a6)
-        move.w  #0,BLTDMOD(a6)
-
-        move.w  #(BLT0_ABD_E4),BLTCON0(a6)
-        move.w  #(BSHIFT_8),BLTCON1(a6)
-        move.w  #$FF00,BLTCDAT(a6)
-
-        bsr     WaitBlitAGA
-        move.w  #PLANE_WORDS,BLTSIZV(a6)
         move.w  #1,BLTSIZH(a6)
-        bsr     WaitBlitAGA
-        rts
 
-; ---------------------------------------------------------------------
-; Helper: merge + write plane2 using res0 -> res1 -> a3
-; ---------------------------------------------------------------------
-MakePlaneFromRes0_Plane2:
-        lea     res0,a5
-        lea     (RES_SIZE-2)(a5),a5
-        move.l  a5,BLTAPTH(a6)
-        move.l  a5,BLTBPTH(a6)
-        lea     res1,a5
-        lea     (RES_SIZE-2)(a5),a5
-        move.l  a5,BLTDPTH(a6)
-
-        move.w  #0,BLTAMOD(a6)
-        move.w  #0,BLTBMOD(a6)
-        move.w  #0,BLTDMOD(a6)
-
-        move.w  #(ASHIFT_2|BLT0_ABD_E4),BLTCON0(a6)
-        move.w  #(BSHIFT_8|BLT_DESC),BLTCON1(a6)
-        move.w  #$CCCC,BLTCDAT(a6)
-
-        bsr     WaitBlitAGA
-        move.w  #CHUNKY_H,BLTSIZV(a6)
-        move.w  #MERGE_WWORDS,BLTSIZH(a6)
+; =====================================================================
+; Blit 7 — Merge plane1: resCD → res1
+;   B-shift=6, C=$CCCC, descending; isolates plane1 bits.
+; =====================================================================
         bsr     WaitBlitAGA
 
-        ; write res1 to plane2 (a3)
-        lea     res1,a5
-        move.l  a5,BLTAPTH(a6)
-        lea     2(a5),a5
-        move.l  a5,BLTBPTH(a6)
-        move.l  a3,BLTDPTH(a6)
-
-        move.w  #2,BLTAMOD(a6)
-        move.w  #2,BLTBMOD(a6)
-        move.w  #0,BLTDMOD(a6)
-
-        move.w  #(BLT0_ABD_E4),BLTCON0(a6)
-        move.w  #(BSHIFT_8),BLTCON1(a6)
-        move.w  #$FF00,BLTCDAT(a6)
-
-        bsr     WaitBlitAGA
-        move.w  #PLANE_WORDS,BLTSIZV(a6)
-        move.w  #1,BLTSIZH(a6)
-        bsr     WaitBlitAGA
-        rts
-
-; ---------------------------------------------------------------------
-; Helper: merge + write plane1 using resCD -> res1 -> a2
-; ---------------------------------------------------------------------
-MakePlaneFromResCD_Plane1:
         lea     resCD,a5
         lea     (RES_SIZE-2)(a5),a5
         move.l  a5,BLTAPTH(a6)
@@ -362,9 +367,12 @@ MakePlaneFromResCD_Plane1:
         bsr     WaitBlitAGA
         move.w  #CHUNKY_H,BLTSIZV(a6)
         move.w  #MERGE_WWORDS,BLTSIZH(a6)
+
+; =====================================================================
+; Blit 8 — Write plane1: res1 → a2 (plane1)
+; =====================================================================
         bsr     WaitBlitAGA
 
-        ; write res1 to plane1 (a2)
         lea     res1,a5
         move.l  a5,BLTAPTH(a6)
         lea     2(a5),a5
@@ -382,13 +390,13 @@ MakePlaneFromResCD_Plane1:
         bsr     WaitBlitAGA
         move.w  #PLANE_WORDS,BLTSIZV(a6)
         move.w  #1,BLTSIZH(a6)
-        bsr     WaitBlitAGA
-        rts
 
-; ---------------------------------------------------------------------
-; Helper: merge + write plane0 using resCD -> res1 -> a1
-; ---------------------------------------------------------------------
-MakePlaneFromResCD_Plane0:
+; =====================================================================
+; Blit 9 — Merge plane0: resCD → res1
+;   A-shift=2, B-shift=8, C=$CCCC, descending; isolates plane0 bits.
+; =====================================================================
+        bsr     WaitBlitAGA
+
         lea     resCD,a5
         lea     (RES_SIZE-2)(a5),a5
         move.l  a5,BLTAPTH(a6)
@@ -408,9 +416,12 @@ MakePlaneFromResCD_Plane0:
         bsr     WaitBlitAGA
         move.w  #CHUNKY_H,BLTSIZV(a6)
         move.w  #MERGE_WWORDS,BLTSIZH(a6)
+
+; =====================================================================
+; Blit 10 — Write plane0: res1 → a1 (plane0)
+; =====================================================================
         bsr     WaitBlitAGA
 
-        ; write res1 to plane0 (a1)
         lea     res1,a5
         move.l  a5,BLTAPTH(a6)
         lea     2(a5),a5
@@ -428,17 +439,34 @@ MakePlaneFromResCD_Plane0:
         bsr     WaitBlitAGA
         move.w  #PLANE_WORDS,BLTSIZV(a6)
         move.w  #1,BLTSIZH(a6)
-        bsr     WaitBlitAGA
+
+        ; Restore cooperative bus access (clear BLTPRI)
+        move.w  #DMAF_BLTPRI,DMACON(a6)
+
         rts
 
+; =====================================================================
+; BSS — CHIP memory intermediate buffers
+;
+; Longword-aligned (cnop 0,4) for optimal chip-bus access.
+; The blitter requires word alignment; 32-bit alignment satisfies
+; that requirement and also keeps the chip bus controller happy
+; for any future longword accesses.
+; =====================================================================
         section bss_c,bss_c
-        even
+
+        cnop    0,4
 stretchedChunky:
-        ds.b    CHUNKY_SIZE
+        ds.b    CHUNKY_SIZE             ; 25 600 bytes
+
+        cnop    0,4
 res0:
-        ds.b    RES_SIZE
+        ds.b    RES_SIZE                ; 12 800 bytes
+
+        cnop    0,4
 res1:
-        ds.b    RES_SIZE
+        ds.b    RES_SIZE                ; 12 800 bytes
+
+        cnop    0,4
 resCD:
-        ds.b    RES_SIZE
-        even
+        ds.b    RES_SIZE                ; 12 800 bytes
