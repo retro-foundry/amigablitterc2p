@@ -75,6 +75,14 @@
 #define STEP_SHIFT           5
 #endif
 
+/* PAL low-res pixel aspect (height/width); ~1.25 so we scale v to avoid vertical stretch. */
+#ifndef ASPECT_NUM
+#define ASPECT_NUM           5
+#endif
+#ifndef ASPECT_DEN
+#define ASPECT_DEN           4
+#endif
+
 #ifndef S2P_BENCH_ONLY
 #define S2P_BENCH_ONLY       1
 #endif
@@ -319,6 +327,7 @@ static void build_texture(UBYTE *tex)
 /*
  * Precompute angle/scanline floor setup.
  * du2/dv2 are doubled because the renderer samples once for every 2 screen pixels.
+ * v (and dv_dx) are scaled by ASPECT so the texture looks square on PAL (tall pixels).
  */
 static void build_line_model(void)
 {
@@ -344,9 +353,10 @@ static void build_line_model(void)
 
             du_dx = (rx * step) >> 8;
             dv_dx = (ry * step) >> 8;
+            dv_dx = (dv_dx * (LONG)ASPECT_NUM) / (LONG)ASPECT_DEN;
 
             u0 = ((fx * dist) >> 8) - du_dx * (SCREEN_W / 2);
-            v0 = ((fy * dist) >> 8) - dv_dx * (SCREEN_W / 2);
+            v0 = (((fy * dist) >> 8) * (LONG)ASPECT_NUM) / (LONG)ASPECT_DEN - dv_dx * (SCREEN_W / 2);
 
             g_line_model[ang][ly].u0  = u0;
             g_line_model[ang][ly].v0  = v0;
